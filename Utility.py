@@ -13,6 +13,7 @@ import operator
 from sklearn.model_selection import KFold
 import math
 import pickle
+from lifelines.datasets import load_waltons
 from sklearn import metrics
 from sklearn import preprocessing
 from sklearn.datasets import load_iris
@@ -21,7 +22,7 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
 import seaborn as sns
 from sklearn.neural_network import MLPClassifier
-
+from sklearn.metrics import cohen_kappa_score
 import csv
 import plotly.plotly as py
 import plotly.graph_objs as go
@@ -29,10 +30,24 @@ from pydoc import help
 from scipy.stats.stats import pearsonr
 from scipy import stats
 
+from sklearn.naive_bayes import GaussianNB
+from sklearn.svm import SVC
+from sklearn.datasets import load_digits
+from sklearn.model_selection import learning_curve
+from sklearn.model_selection import ShuffleSplit
+from sklearn.naive_bayes import BernoulliNB
+from lifelines import KaplanMeierFitter
+from sklearn.linear_model import LinearRegression,LogisticRegressionCV
+from sklearn.kernel_approximation import RBFSampler
+
+
+
 genes = np.array(
     ['GCH1', 'CDH1', 'CDH2', 'VIM', 'bCatenin', 'ZEB1', 'ZEB2', 'TWIST1', 'SNAI1', 'SNAI2', 'RET', 'NGFR', 'EGFR',
      'AXL'])
 
+def sigmoid(X):
+    return 1 / (1 + np.exp(-X))
 
 # call FeatureToLabel for each gene
 
@@ -82,8 +97,7 @@ def FeatureToLabel(classification, gene, name):
             missing_Gene.append(i)
 
     # delete empty records
-    for i in range(0, len(missing_Gene)):
-        classification = np.delete(classification, i, 0)  # i-th row
+    classification = np.delete(classification, missing_Gene, 0)  # fixed to list
 
     return classification
 
@@ -133,8 +147,8 @@ def encoding(file_name_input, file_name_output, index_list):
     np.savetxt(file_name_output, X, delimiter='\t', fmt='%s')
     return X
 
-
-def addGenes(input_file, classification, Genes):
+#from dictionary
+def addGenes(classification, Genes):
     # for every pair in the dictionary
     for i in Genes:
         g = Genes[i]  # matrix that contains the data
@@ -142,6 +156,56 @@ def addGenes(input_file, classification, Genes):
         # i contains the name of the gene
         classification = FeatureToLabel(classification, g, i)
     return classification
+
+
+#from list
+def addGenesFromLists(input_file,class_file):
+    # class.txt : rows: patients, cols: labels
+    # TCGA.. labels..
+    classification = np.genfromtxt(class_file, delimiter='\t', dtype=str)
+    # gene: rows: genes, cols:pids
+    # [Hugo_Symbol TCGA]...
+    # DAB1 ...
+    # TNNT2 ...
+    gene = np.genfromtxt(input_file, delimiter='\t', dtype=str)
+    row_gene = gene.shape[0]
+    col_gene = gene.shape[1]
+    col_class = classification.shape[1]
+
+    empty_row = np.zeros((1,col_class))
+    classification = np.append(empty_row,classification,axis=0)
+    row_class = classification.shape[0]
+
+    empty_cols = np.zeros((row_class, row_gene - 1))
+    empty_cols = empty_cols - 1000  # mark empty cells
+
+    classification = np.append(classification,empty_cols,axis=1)
+
+    # paste gene names
+
+    for i in range (col_class,col_class + row_gene -1 ):
+        classification[0,i] = gene[i - col_class + 1,0]
+
+    # every patient
+    empty_list = []
+    for j in range (1,row_class):
+        found = 0
+        # match to class file
+        for i in range (1,col_gene):
+            pid_class = classification[j,0] #class
+            pid = gene[0,i] #methy_all
+            if (pid_class[0:12] == pid[0:12]):
+                found = 1
+                for k in range(1,row_gene):
+                    classification[j,k+col_class-1] = gene[k,i]
+        if found == 0:
+            empty_list.append(j)
+
+    #delete
+    classification = np.delete(classification,empty_list,0)
+    print(classification[0,:])
+    return classification
+    #print("methy class size = ",classification.shape)
 
 
 def inividualgenetolabel(class_file, gene_name, genes):
@@ -152,7 +216,7 @@ def inividualgenetolabel(class_file, gene_name, genes):
 
     gene = np.genfromtxt(gene_file, delimiter='\t', dtype=str)
     gene = np.delete(gene, 0, 0)
-    empty_cols = np.zeros((gene.shape[0], 3))
+    empty_cols = np.zeros((gene.shape[0], 4))
     gene = np.append(gene, empty_cols, axis=1)
     found = 0
 
@@ -167,267 +231,190 @@ def inividualgenetolabel(class_file, gene_name, genes):
                 gene[k, 2] = classification[j, 1]
                 gene[k, 3] = classification[j, 2]
                 gene[k, 4] = classification[j, 3]
+                gene[k, 5] = classification[j, 4]
                 found = 1
                 break
     if found == 0:
         missing_label.append(k)
 
     # delete empty entries
-    for j in range(0, len(missing_label)):
-        gene = np.delete(gene, j, 0)
+    gene = np.delete(gene, missing_label, 0) # fixed to list
 
+
+    title = gene[0, 0]
+    if title[0:5] != 'TCGA':
+        gene = np.delete(gene, 0, 0)
     np.savetxt("data/" + gene_name + "_class.txt", gene, delimiter='\t', fmt='%s')
 
-
+# gene value -> gene + labels
 def addLabelToGene(genes):
-    class_file = "data/class_encoded.txt"
+    class_file = "data/class.txt"
     for i in range(0, len(genes)):
         inividualgenetolabel(class_file, genes[i], genes)
 
+def findBestK(X,k):
+    print(X)
+    X = np.sort(X)
+
+    return X[:k]
+
+
+def LOG2(x):
+    for i in range(0,x.shape[0]):
+        if (x[i]>0):
+            x[i] = np.log2(x[i])
+        elif (x[i]<0):
+            x[i] = np.log2(-x[i])
+
+
+    return x
+def reject_outliers(data, m=2):
+    data = data[abs(data - np.mean(data)) < m * np.std(data)]
+    return data.reshape(data.shape[0],1)
+def medianCenter(X):
+    me = np.median(X)
+    return X - me
+
+
+#GCH1 with CDH1, CDH2, Vimentin, SNAI1, SNA2, Twist1, ZEB1/2 and b-Catenin
+def corrGCH1EMT(EMT):
+
+
+    gene_stat = []
+    # gene data have different size
+    # choose high expression (for better correlation?)
+    cnt = 6
+    for i in EMT:
+
+        GCH1 = np.genfromtxt("data/GCH1.txt", delimiter='\t', dtype=str)
+        X = np.genfromtxt("data/" + i +".txt", delimiter='\t', dtype=str)
+
+        GCH1 = GCH1[:,1:2]
+        X = X[:,1:2]
+        GCH1 = GCH1[1:GCH1.shape[0], :]
+        GCH1 = GCH1.reshape(GCH1.shape[0],1)
+        X = X[1:X.shape[0], :]
+        X = X.reshape(X.shape[0],1)
+        GCH1 = GCH1.astype(float)
+        X = X.astype(float)
+
+
+        # size
+        GCH1_size = GCH1.shape[0]
+        gene_size = X.shape[0]
+
+        if (GCH1_size < gene_size):
+            X = X[0:GCH1_size, :]
+        else:
+            GCH1 = GCH1[0:gene_size, :]
+
+        ones = np.ones((X.shape[0],1))
+        tmp = np.append(ones,X,axis=1)
+        tmp = np.append(tmp,X*X,axis=1)
+        tmp = np.append(tmp,X*X*X,axis=1)
+        tmp = np.append(tmp,X*X*X*X,axis=1)
+
+        #X = tmp
+
+
+        rbf_feature = RBFSampler(gamma=0.1, random_state=1)
+        X = rbf_feature.fit_transform(X)
+        #print(rbf_feature.get_params())
+        Ntrain = int(GCH1.shape[0]*0.8)
+        N = GCH1.shape[0]
+
+       # GCH1 = preprocessing.scale(GCH1)
+       # X = preprocessing.scale(X)
+
+        lr = LinearRegression()
+        y = GCH1[0:Ntrain,:].reshape(Ntrain,).astype('int')
+        lr.fit(X[0:Ntrain:],y)
+        yhat = lr.predict(X[Ntrain:N,:])
+        ytest = GCH1[Ntrain:N,:].reshape(N-Ntrain,).astype('int')
+
+
+         # compare size
+    
+
+        X = lr.predict(X)
+
+
+
+
+
+        corr, pv = stats.spearmanr(GCH1, X)
+        print(i,corr,pv)
+        #GCH1 = sigmoid(GCH1)
+        #X = sigmoid(X)
+
+        #print("mean square error (percentage)",np.mean((yhat-ytest)**2)/np.mean(ytest))
+
+        #GCH1 = GCH1[np.random.randint(GCH1.shape[0], size=500), :]
+        #X = X[np.random.randint(X.shape[0], size=500 ), :]
+        np.savetxt("data/gene_statistics.txt", gene_stat, delimiter='\t', fmt='%s')
+
+
+
+        GCH1 = reject_outliers(GCH1)
+        X = reject_outliers(X)
+        GCH1_size = GCH1.shape[0]
+        gene_size = X.shape[0]
+        if (GCH1_size < gene_size):
+            X = X[0:GCH1_size, :]
+        else:
+            GCH1 = GCH1[0:gene_size, :]
+
+
+        # log2 median-centered intensity
+        GCH1 = LOG2(GCH1)
+        X = LOG2(X)
+        GCH1 = medianCenter(GCH1)
+        X = medianCenter(X)
+
+
+        corr = round(corr,4)
+        pv = round(pv,4)
+        gene_stat.append([i,corr,pv])
+        plt.scatter(X,GCH1)
+        plt.title("r=" + str(corr) + " p=" + str(pv))
+        #ax.set_title = ('r=%4f, p=%4f',corr,pv)
+        plt.ylabel("gene_GCH1")
+        plt.xlabel("gene_" + i)
+        plt.legend()
+        plt.savefig("images/GCH1-" + i)
+        plt.clf()
+
+
+
+
+
 
 def computeCorr(Genes):
-    state = np.zeros((14, 7))
+    state = np.zeros((14, 9))
     cnt = 0
     for i in Genes:
         X = np.genfromtxt("data/" + i + "_class.txt", delimiter='\t', dtype=str)
         gene = X[:, 1]
         ER = X[:, 2]
         PR = X[:, 3]
-        HER = X[:, 4]
+        HER2 = X[:, 4]
+        TN = X[:, 5]
         gene = preprocessing.scale(gene.astype(float))
         corr_ER, pv_ER = stats.spearmanr(gene, ER)
         corr_PR, pv_PR = stats.spearmanr(gene, PR)
-        corr_HER, pv_HER = stats.spearmanr(gene, HER)
-        state[cnt, :] = np.array([[cnt, corr_ER, pv_ER, corr_PR, pv_PR, corr_HER, pv_HER]])
+        corr_HER2, pv_HER2 = stats.spearmanr(gene, HER2)
+        corr_TN, pv_TN = stats.spearmanr(gene, TN)
+
+        state[cnt, :] = np.array([[cnt, corr_ER, pv_ER, corr_PR, pv_PR, corr_HER2, pv_HER2, corr_TN, pv_TN]])
         cnt = cnt + 1
     np.savetxt("data/statistics.txt", state, delimiter='\t', fmt='%s')
 
 
-def boxPlot(df):
-    pos = df[df.Class == 1]
-    neg = df[df.Class == 0]
-
-    # first boxplot pair
-    ER_pos = plt.boxplot(pos, positions=[1, 2], widths=0.6)
-    plt.setBoxColors(ER_pos)
-
-    # second boxplot pair
-    ER_neg = plt.boxplot(neg, positions=[4, 5], widths=0.6)
-    plt.setBoxColors(ER_neg)
-
-    # set axes limits and labels
-    plt.xlim(0, 9)
-    plt.ylim(0, 9)
-    plt.ax.set_xticklabels(['ER+', 'ER-'])
-    plt.ax.set_xticks([1.5, 4.5, 7.5])
-
-    plt.savefig("images/" + i)
 
 
-def scatterPlot(df, x, y, z):
-    # Set style of scatterplot
-    sns.set_context("notebook", font_scale=1.1)
-    sns.set_style("ticks")
-    # Create scatterplot of dataframe
-    g = sns.lmplot(x,  # Horizontal axis
-                   y,  # Vertical axis
-                   data=df,  # Data source
-                   fit_reg=False,  # Don't fix a regression line
-                   hue=z,  # Set color
-                   scatter_kws={"marker": "D",  # Set marker style
-                                "s": 100})  # S marker size
-    g.fig.get_axes()[0].set_yscale('log')
-    plt.savefig("images/Scatter_" + x)
 
 
-# plot
-def plotCorrelation(Genes):
-    for i in Genes:
-        X = np.genfromtxt("data/" + i + "_class.txt", delimiter='\t', dtype=str)
-        tmp = np.concatenate((X[:, 2:3], X[:, 1:2]), axis=1)
-        df = pd.DataFrame(tmp, columns=['Class', i]).iloc[:, 0:2]
-        df = df.astype(float)
-
-        scatterPlot(df, i, 'Class', 'Class')
 
 
-def LRGeneral(tmp, label, nf):
-    train_acc = 0
-    tes_acc = 0
-    train_auc = 0
-    test_auc = 0
-    for i in range(0, 100):
-        X_train, X_test, Y_train, Y_test = train_test_split(tmp, label, test_size=0.2)
-
-        data = np.append(tmp, label, axis=1)
-        # print(X_train.shape)
-        # print(X_test.shape)
-        # print(Y_train.shape)
-        # print(Y_test.shape)
-
-        Y_train = Y_train.ravel()
-        Y_test = Y_test.ravel()
-        X_test = X_test.astype(float)
-        X_train = X_train.astype(float)
-        Y_test = Y_test.astype(float)
-        Y_train = Y_train.astype(float)
-
-        LR = LogisticRegression(penalty='l1')
-        LR.fit(X_train, Y_train)
-        Y_hat_t = LR.predict(X_train)
-
-        train_acc = train_acc + np.mean(Y_hat_t == Y_train)
-
-        Y_hat = LR.predict(X_test)
-        tes_acc = tes_acc + np.mean(Y_hat == Y_test)
-
-        fpr, tpr, threshold = metrics.roc_curve(Y_train, Y_hat_t)
-        roc_auc = metrics.auc(fpr, tpr)
-
-        train_auc = train_auc + roc_auc
-
-        fpr, tpr, threshold = metrics.roc_curve(Y_test, Y_hat)
-        roc_auc = metrics.auc(fpr, tpr)
-
-        test_auc = test_auc + roc_auc
-
-        result = np.array([[train_acc, tes_acc, train_auc, test_auc]])
-
-    print(result / 100)
-
-    f = open('data/result.txt', 'ab')
-    np.savetxt(f, result)
-    f.close()
-
-    # plot model
-    plotLR(nf, LR, data)
-    plotROC(Y_train, Y_hat_t, Y_test, Y_hat, "LR")
-
-
-def intersection(Genes, number):
-    X = np.genfromtxt("data/GCH1_class.txt", delimiter='\t', dtype=str)
-    X = X[:, 0:3]
-    X = np.append(X, np.zeros((X.shape[0], number - 1)), axis=1)
-
-    cnt = 2
-    for i in Genes:
-        cnt = cnt + 1
-        missing_Gene = []
-        if (i != 'GCH1'):
-            gene = Genes[i]
-            print(gene)
-            for j in range(0, X.shape[0]):
-                found = 0
-                for k in range(0, gene.shape[0]):
-                    pid_i = X[j, 0]
-                    pid_j = gene[k, 0]
-
-                    # pid match
-                    if pid_i[0:12] == pid_j:
-                        X[j, cnt] = gene[k, 1]
-                found = 1
-            if found == 0:
-                missing_Gene.append(j)
-
-        # delete empty records
-        for r in range(0, len(missing_Gene)):
-            X = np.delete(X, r, 0)  # i-th row
-    return X
-
-
-def logisticRegression(nf, Genes):
-    if (nf == 14):
-        X = np.genfromtxt("data/classification_gene.txt", delimiter='\t', dtype=str)
-        tmp = X[:, 4:19]
-        label = X[:, 1:2]
-        print("Logistic Regression on 14 features")
-        LRGeneral(tmp, label, nf)
-    elif (nf == 1):  # each
-        for i in Genes:
-            X = Genes[i]
-            tmp = X[:, 1:2]
-            label = X[:, 2:3]
-            print("Logistic Regression on selected features")
-            LRGeneral(tmp, label, nf)
-    elif (nf > 1):  # combine
-
-
-        classification = np.genfromtxt("data/class.txt", delimiter='\t', dtype=str)
-        input_file = "data/class.txt"
-        gene_reduced = addGenes(input_file, classification, Genes)
-        np.savetxt("data/gene_reduced.txt", gene_reduced, delimiter='\t', fmt='%s')
-
-        tmp = gene_reduced[:, 4:13]
-        print(tmp.shape[0])
-        label = gene_reduced[:, 1:2]
-        print("Logistic Regression on " + str(nf))
-        LRGeneral(tmp, label, nf)
-
-
-def perfMeasure(y_actual, y_hat):
-    TP = 0
-    FP = 0
-    TN = 0
-    FN = 0
-
-    for i in range(len(y_hat)):
-        if y_actual[i] == y_hat[i] == 1:
-            TP += 1
-        if y_hat[i] == 1 and y_actual[i] != y_hat[i]:
-            FP += 1
-        if y_actual[i] == y_hat[i] == 0:
-            TN += 1
-        if y_hat[i] == 0 and y_actual[i] != y_hat[i]:
-            FN += 1
-
-    return (TP, FP, TN, FN)
-
-
-def plotROC(Y_train, Y_hat_t, Y_test, Y_hat, str):
-    fpr, tpr, threshold = metrics.roc_curve(Y_train, Y_hat_t)
-    roc_auc = metrics.auc(fpr, tpr)
-    plt.plot(fpr, tpr, 'b', label='Testing_AUC = %0.2f' % roc_auc)
-
-    fpr_train, tpr_train, threshold = metrics.roc_curve(Y_test, Y_hat)
-    roc_auc = metrics.auc(fpr_train, tpr_train)
-    plt.plot(fpr_train, tpr_train, 'b', label='Training_AUC = %0.2f' % roc_auc)
-
-    plt.title('Receiver Operating Characteristic')
-    plt.legend(loc='lower right')
-    plt.ylabel('True Positive Rate')
-    plt.xlabel('False Positive Rate')
-
-    plt.savefig("images/" + str)
-
-    plt.clf()
-
-
-def MLP():
-    X = np.genfromtxt("data/classification_gene.txt", delimiter='\t', dtype=str)
-
-    tmp = X[:, 4:19]
-    tmp = tmp.astype(float)
-
-    X_train, X_test, Y_train, Y_test = train_test_split(tmp, X[:, 1:2], test_size=0.1)
-    data = np.append(tmp, X[:, 1:2], axis=1)
-
-    Y_train = Y_train.ravel()
-    Y_test = Y_test.ravel()
-    X_test = X_test.astype(float)
-    X_train = X_train.astype(float)
-    Y_test = Y_test.astype(float)
-    Y_train = Y_train.astype(float)
-
-    clf = MLPClassifier(hidden_layer_sizes=(2))
-
-    clf.fit(X_train, Y_train)
-    Y_hat_t = clf.predict(X_train)
-    print("training accuracy: ", np.mean(Y_hat_t == Y_train))
-    Y_hat = clf.predict(X_test)
-    print("test accuracy: ", np.mean(Y_hat == Y_test))
-
-    print(Y_hat)
-
-    plotROC(Y_train, Y_hat_t, Y_test, Y_hat, "MLP")
 
 

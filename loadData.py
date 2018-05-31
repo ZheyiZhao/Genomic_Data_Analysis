@@ -1,4 +1,7 @@
-from  Utility import containsNonReserved,extractGene,FeatureToLabel,plotLR,deleteEmptyEntries,encoding,addGenes,inividualgenetolabel,computeCorr,boxPlot,scatterPlot,plotCorrelation,logisticRegression,perfMeasure,plotROC
+from  Utility import containsNonReserved, extractGene, FeatureToLabel, plotLR, deleteEmptyEntries, encoding, addGenes,inividualgenetolabel, computeCorr,addLabelToGene
+
+
+
 import _pickle as cp
 import numpy as np
 import pandas as pd
@@ -33,15 +36,19 @@ genes = np.array(
     ['GCH1', 'CDH1', 'CDH2', 'VIM', 'bCatenin', 'ZEB1', 'ZEB2', 'TWIST1', 'SNAI1', 'SNAI2', 'RET', 'NGFR', 'EGFR',
      'AXL'])
 
+
 def loadData():
     # I. pre-processing
     # 1 Load Data
     # brca_tcga:
-    # 1105 samples / 1098 patients
     # Breast Invasive Carcinoma (TCGA, Provisional)
-    # data_RNA_Seq_v2_expression_median
+    # 1105 samples / 1098 patients
 
     # 1.1 RNA_seq
+
+
+
+
 
     RNA_seq = np.loadtxt("data/data_RNA_Seq_v2_expression_median.txt", dtype1)
 
@@ -130,6 +137,14 @@ def loadData():
                 classification[i, j] = 'NA'
     # delete the 0-th row of titles
     classification = np.delete(classification, 0, 0)
+
+    np.savetxt("data/class.txt", classification, delimiter='\t', fmt='%s')
+
+    # add triple negative
+
+
+
+    # encode pos and neg to binary
     index_list = ([1, 2, 3])
 
     file_name_input = "data/class.txt"
@@ -139,6 +154,23 @@ def loadData():
     reserved = (['0', '1'])
     classification = deleteEmptyEntries(file_name_output, classification, index_list, reserved)
 
+
+    #new column for TN
+    empty_col = np.zeros((classification.shape[0],1))
+    classification = np.append(classification, empty_col, axis=1)
+
+
+
+    for i in range(0, classification.shape[0]):
+        isTN = True
+        for j in range(1, 4):
+            if classification[i, j] == '1':
+                isTN = False
+                break
+        if isTN == True:
+            classification[i,4] = '1'
+        else:
+            classification[i,4] = '0'
 
     np.savetxt("data/class.txt", classification, delimiter='\t', fmt='%s')
 
